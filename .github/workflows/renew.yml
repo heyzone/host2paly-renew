@@ -42,13 +42,13 @@ jobs:
           npx playwright install --with-deps chromium
 
       # =========================================
-      # 修改点：不再下载 NopeCHA，改为下载免费的 Buster
+      # 修复点：更正了 Buster 最新版本 (v3.1.3) 和实际的文件名
       # =========================================
       - name: Download Buster extension
         working-directory: scripts
         run: |
           mkdir -p extensions/buster
-          wget -O extensions/buster.zip https://github.com/dessant/buster/releases/download/v2.0.1/buster-extension-2.0.1-chrome.zip
+          wget -O extensions/buster.zip https://github.com/dessant/buster/releases/download/v3.1.3/buster_captcha_solver_for_humans-3.1.3-chrome.zip
           7z x -y extensions/buster.zip -oextensions/buster/unpacked
 
       - name: Run renew script
