@@ -85,7 +85,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: screenshots-${{ github.run_number }}
-          path: output/screenshots/*.png
+          path: scripts/output/screenshots/*.png  
           retention-days: 7
           if-no-files-found: ignore
 
