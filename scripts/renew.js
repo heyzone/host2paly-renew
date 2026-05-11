@@ -7,7 +7,7 @@ const rawUrls = process.env.RENEW_URLS || '';
 const TARGET_URLS = rawUrls.split(/[\n,;]+/).map(u => u.trim()).filter(u => u.startsWith('http'));
 const PROXY_JSON = process.env.PROXY_JSON;
 
-const EXTENSION_PATH = path.join(__dirname, 'extensions', 'nopecha', 'unpacked');
+const EXTENSION_PATH = path.join(__dirname, 'extensions', 'buster', 'unpacked');
 
 async function startProxy() {
     console.log('[初始化] 准备 Hysteria2 代理配置...');
@@ -85,16 +85,6 @@ async function run() {
                 await page.waitForTimeout(8000); 
             }
 
-            console.log(`[任务 ${taskNum} 交互] 查找并点击蓝色的 "Renew server" 按钮...`);
-            const initialRenewBtn = page.locator('text="Renew server"').first();
-            if (await initialRenewBtn.isVisible()) {
-                await initialRenewBtn.click();
-            } else {
-                console.log(`[任务 ${taskNum} 警告] 没找到蓝色的 Renew server 按钮。`);
-            }
-
-            await page.waitForTimeout(2000);
-
             console.log(`[任务 ${taskNum} 交互] 查找二次确认的紫色 Renew 按钮...`);
             const modalRenewBtn = page.locator('button:text-is("Renew")').first();
             
@@ -105,12 +95,40 @@ async function run() {
                 console.log(`[任务 ${taskNum} 警告] 未找到紫色的 Renew 弹窗按钮。`);
             }
 
-            // 延长等待时间至 60 秒，确保 NopeCHA 有充足的时间处理复杂的图片验证码
-            console.log(`[任务 ${taskNum} 交互] 等待 NopeCHA 处理图片验证码 (给予 60 秒时间)...`);
-            await page.waitForTimeout(60000); 
+            // ==========================================
+            // 新增：Buster 破解逻辑
+            // ==========================================
+            console.log(`[任务 ${taskNum} 交互] 等待 reCAPTCHA 弹窗加载...`);
+            await page.waitForTimeout(3000); 
 
+            try {
+                // 定位到 reCAPTCHA 弹出来的那个包含图片的 iframe
+                const bframe = page.frameLocator('iframe[title*="recaptcha challenge"]');
+
+                // 1. 尝试点击左下角的“耳机”图标，切换到音频验证模式
+                const audioButton = bframe.locator('#recaptcha-audio-button');
+                await audioButton.waitFor({ state: 'visible', timeout: 10000 });
+                await audioButton.click();
+                console.log(`[任务 ${taskNum} 交互] 已切换到音频验证模式...`);
+                
+                await page.waitForTimeout(2000);
+
+                // 2. 点击 Buster 插件注入的破解按钮（图标是一个黄色小人/齿轮）
+                const busterButton = bframe.locator('.help-button-holder');
+                await busterButton.waitFor({ state: 'visible', timeout: 5000 });
+                await busterButton.click();
+                console.log(`[任务 ${taskNum} 交互] 已呼叫 Buster 插件进行语音听写破解...`);
+
+                // 3. 等待语音听写和验证完成 (给予 25 秒)
+                await page.waitForTimeout(25000);
+                
+            } catch (e) {
+                console.log(`[任务 ${taskNum} 警告] Buster 流程未完全执行，可能未弹出验证码或遭遇 IP 拦截。详情: ${e.message}`);
+            }
+
+            // 截图确认
             await page.screenshot({ path: path.join(__dirname, 'screenshots', `4_final_result_${taskNum}.png`), fullPage: true });
-            console.log(`[任务 ${taskNum} 截图] 流程结束，请查看 4_final_result_${taskNum}.png 确认时间是否已刷新。`);
+            console.log(`[任务 ${taskNum} 截图] 流程结束，请查看 4_final_result_${taskNum}.png。`);
 
         } catch (error) {
             console.error(`[任务 ${taskNum} 错误] 运行中断:`, error);
