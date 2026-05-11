@@ -7,6 +7,7 @@ const rawUrls = process.env.RENEW_URLS || '';
 const TARGET_URLS = rawUrls.split(/[\n,;]+/).map(u => u.trim()).filter(u => u.startsWith('http'));
 const PROXY_JSON = process.env.PROXY_JSON;
 
+// 修改点：插件路径指向解压后的 Buster 目录
 const EXTENSION_PATH = path.join(__dirname, 'extensions', 'buster', 'unpacked');
 
 async function startProxy() {
@@ -55,10 +56,12 @@ async function run() {
 
     const page = await context.newPage();
     
-    // 给 NopeCHA 插件几秒钟初始化时间，并关闭可能弹出的欢迎页，防止焦点丢失
+    // 给 Buster 插件几秒钟初始化时间
     await page.waitForTimeout(3000);
+
+    // 关闭可能弹出的插件欢迎页
     for (const p of context.pages()) {
-        if (p !== page && p.url().includes('nopecha')) {
+        if (p !== page && p.url().includes('extension')) {
             await p.close();
         }
     }
@@ -85,6 +88,16 @@ async function run() {
                 await page.waitForTimeout(8000); 
             }
 
+            console.log(`[任务 ${taskNum} 交互] 查找并点击蓝色的 "Renew server" 按钮...`);
+            const initialRenewBtn = page.locator('text="Renew server"').first();
+            if (await initialRenewBtn.isVisible()) {
+                await initialRenewBtn.click();
+            } else {
+                console.log(`[任务 ${taskNum} 警告] 没找到蓝色的 Renew server 按钮。`);
+            }
+
+            await page.waitForTimeout(2000);
+
             console.log(`[任务 ${taskNum} 交互] 查找二次确认的紫色 Renew 按钮...`);
             const modalRenewBtn = page.locator('button:text-is("Renew")').first();
             
@@ -96,7 +109,7 @@ async function run() {
             }
 
             // ==========================================
-            // 新增：Buster 破解逻辑
+            // 修改点：Buster 破解逻辑 (模拟点击耳机和破解按钮)
             // ==========================================
             console.log(`[任务 ${taskNum} 交互] 等待 reCAPTCHA 弹窗加载...`);
             await page.waitForTimeout(3000); 
@@ -113,7 +126,7 @@ async function run() {
                 
                 await page.waitForTimeout(2000);
 
-                // 2. 点击 Buster 插件注入的破解按钮（图标是一个黄色小人/齿轮）
+                // 2. 点击 Buster 插件注入的破解按钮（图标是一个黄色小人）
                 const busterButton = bframe.locator('.help-button-holder');
                 await busterButton.waitFor({ state: 'visible', timeout: 5000 });
                 await busterButton.click();
@@ -123,12 +136,11 @@ async function run() {
                 await page.waitForTimeout(25000);
                 
             } catch (e) {
-                console.log(`[任务 ${taskNum} 警告] Buster 流程未完全执行，可能未弹出验证码或遭遇 IP 拦截。详情: ${e.message}`);
+                console.log(`[任务 ${taskNum} 警告] Buster 流程未完全执行，可能是没有弹出验证码。详情: ${e.message}`);
             }
 
-            // 截图确认
             await page.screenshot({ path: path.join(__dirname, 'screenshots', `4_final_result_${taskNum}.png`), fullPage: true });
-            console.log(`[任务 ${taskNum} 截图] 流程结束，请查看 4_final_result_${taskNum}.png。`);
+            console.log(`[任务 ${taskNum} 截图] 流程结束，请查看 4_final_result_${taskNum}.png 确认时间是否已刷新。`);
 
         } catch (error) {
             console.error(`[任务 ${taskNum} 错误] 运行中断:`, error);
