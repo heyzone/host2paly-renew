@@ -41,11 +41,13 @@ jobs:
           npm install
           npx playwright install --with-deps chromium
 
+      # =========================================
+      # 修改点：不再下载 NopeCHA，改为下载免费的 Buster
+      # =========================================
       - name: Download Buster extension
         working-directory: scripts
         run: |
           mkdir -p extensions/buster
-          # 下载 Buster GitHub Release 版本
           wget -O extensions/buster.zip https://github.com/dessant/buster/releases/download/v2.0.1/buster-extension-2.0.1-chrome.zip
           7z x -y extensions/buster.zip -oextensions/buster/unpacked
 
@@ -60,9 +62,9 @@ jobs:
           mkdir -p screenshots
           xvfb-run -a node renew.js
 
-      # =========================
-      # 🚀 发送 Telegram 截图通知 (合并为单次通知)
-      # =========================
+      # =========================================
+      # 🚀 发送 Telegram 截图通知 (合并为单次相册通知)
+      # =========================================
       - name: Send Consolidated Telegram Notification
         if: always()
         working-directory: scripts
@@ -97,7 +99,7 @@ jobs:
           files = {}
           caption = f"🤖 *主机续期合并报告*\n✅ 成功任务: {len(success_files)} 个\n❌ 异常/崩溃: {len(error_files)} 个"
 
-          # 选取最多10张图片（TG单次MediaGroup限制）
+          # 选取最多10张图片组合成相册发出
           for i, path in enumerate(all_files[:10]):
               name = f"photo{i}"
               media_item = {
