@@ -78,6 +78,7 @@ jobs:
           H2P_PASSWORD: ${{ secrets.H2P_PASSWORD }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          CAPSOLVER_API_KEY: ${{ secrets.CAPSOLVER_API_KEY }}
         run: xvfb-run -a python main.py
 
       - name: 上传截图
