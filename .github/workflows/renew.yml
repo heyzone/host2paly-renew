@@ -41,17 +41,13 @@ jobs:
           npm install
           npx playwright install --with-deps chromium
 
-      - name: Download NopeCHA extension
+      - name: Download Buster extension
         working-directory: scripts
         run: |
-          mkdir -p extensions/nopecha
-          wget -O extensions/nopecha/chromium.zip https://github.com/NopeCHALLC/nopecha-extension/releases/latest/download/chromium.zip
-      
-      - name: Unpack NopeCHA extension
-        working-directory: scripts
-        run: |
-          mkdir -p extensions/nopecha/unpacked
-          7z x -y extensions/nopecha/chromium.zip -oextensions/nopecha/unpacked
+          mkdir -p extensions/buster
+          # 下载 Buster GitHub Release 版本
+          wget -O extensions/buster.zip https://github.com/dessant/buster/releases/download/v2.0.1/buster-extension-2.0.1-chrome.zip
+          7z x -y extensions/buster.zip -oextensions/buster/unpacked
 
       - name: Run renew script
         working-directory: scripts
