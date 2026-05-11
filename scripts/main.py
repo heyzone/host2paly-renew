@@ -1,8 +1,7 @@
-import os
+    import os
 import sys
 import time
 import random
-import html
 import requests
 import tempfile
 import subprocess
@@ -10,34 +9,28 @@ import json
 from datetime import datetime, timezone, timedelta
 from DrissionPage import ChromiumPage, ChromiumOptions
 
-try:
-    import speech_recognition as sr
-    from pydub import AudioSegment
-except ImportError:
-    pass
-
 # ==============================================================================
 # 配置区域
 # ==============================================================================
-# 优先从环境变量获取（支持多行、逗号或分号分隔），方便 GitHub Actions 传入
 env_urls = os.environ.get('RENEW_URLS', '')
 if env_urls:
     RENEW_URLS = [u.strip() for u in env_urls.replace(';', ',').replace('\n', ',').split(',') if u.strip().startswith('http')]
 else:
-    # 备用本地测试链接
     RENEW_URLS = [
         "https://host2play.gratis/server/renew?i=b94d43bb-aabc-4425-848a-1885476fa724",
     ]
 
-MAX_CAPTCHA = 3
 MAX_RENEW_RETRIES_PER_URL = 50
+
+# ==============================================================================
+# CapSolver 验证码破解配置
+# ==============================================================================
+CAPSOLVER_API_KEY = os.environ.get('CAPSOLVER_API_KEY', '')
+HOST2PLAY_SITE_KEY = "6LeUAtQiAAAAADTs_7zmhdpi_78S9bW-zzDFmpV2"  # 你提取出的固定 SiteKey
 
 # ==============================================================================
 # 自定义异常 & 日志
 # ==============================================================================
-class CaptchaBlocked(Exception):
-    pass
-
 def log(msg, level="INFO"):
     prefix = {"INFO": "[INFO]", "WARN": "[WARN]", "ERROR": "[ERROR]"}.get(level, "[INFO]")
     print(f"{prefix} {msg}", flush=True)
@@ -112,306 +105,55 @@ def restart_warp():
         return False
 
 # ==============================================================================
-# reCAPTCHA 辅助函数
+# CapSolver 打码请求
 # ==============================================================================
-def find_recaptcha_frame(page, kind):
-    try:
-        for frame in page.get_frames():
-            frame_url = frame.url or ""
-            if "recaptcha" in frame_url and kind in frame_url:
-                return frame
-    except Exception:
-        pass
-    return None
-
-def is_recaptcha_solved(page):
-    try:
-        for frame in page.get_frames():
-            try:
-                token = frame.run_js("return document.querySelector(\"textarea[name='g-recaptcha-response']\")?.value")
-                if token and len(token) > 30:
-                    return True
-            except Exception:
-                pass
-    except Exception:
-        pass
-    anchor = find_recaptcha_frame(page, "anchor")
-    if anchor:
-        try:
-            checked = anchor.run_js("return document.querySelector('#recaptcha-anchor')?.getAttribute('aria-checked') === 'true'")
-            if checked:
-                return True
-        except Exception:
-            pass
-    return False
-
-def is_blocked(page):
-    bframe = find_recaptcha_frame(page, "bframe")
-    if not bframe:
-        return False
-    try:
-        return bool(bframe.run_js("""
-            const h = document.querySelector('.rc-doscaptcha-header-text');
-            if (h && h.textContent.toLowerCase().includes('try again later')) return true;
-            const e = document.querySelector('.rc-audiochallenge-error-message');
-            if (e && e.offsetParent !== null) return true;
-            return false;
-        """))
-    except Exception:
-        return False
-
-def click_recaptcha_checkbox(page):
-    anchor = find_recaptcha_frame(page, "anchor")
-    if not anchor:
-        for _ in range(120):
-            anchor = find_recaptcha_frame(page, "anchor")
-            if anchor:
-                break
-            time.sleep(1)
-    if not anchor:
-        raise RuntimeError("未找到 reCAPTCHA anchor frame")
-    checkbox = anchor.ele('#recaptcha-anchor', timeout=3)
-    if not checkbox:
-        raise RuntimeError("未找到 reCAPTCHA 复选框")
-    page.actions.move_to(checkbox, duration=random.uniform(0.4, 1.0))
-    time.sleep(random.uniform(0.2, 0.5))
-    try:
-        checkbox.click()
-    except Exception:
-        checkbox.click(by_js=True)
-    time.sleep(3)
-    if is_blocked(page):
-        raise CaptchaBlocked("点击复选框后检测到 IP 被封锁")
-
-def switch_to_audio(page):
-    bframe = find_recaptcha_frame(page, "bframe")
-    if not bframe:
-        return False
-    try:
-        input_box = bframe.ele('#audio-response', timeout=1)
-        if input_box and input_box.states.is_displayed:
-            return True
-    except Exception:
-        pass
-    for attempt in range(3):
-        try:
-            audio_btn = bframe.ele('#recaptcha-audio-button', timeout=3)
-            if audio_btn:
-                try:
-                    audio_btn.click()
-                except Exception:
-                    audio_btn.click(by_js=True)
-                time.sleep(3)
-                if is_blocked(page):
-                    raise CaptchaBlocked("点击音频按钮后检测到 IP 被封锁")
-                input_box = bframe.ele('#audio-response', timeout=1)
-                if input_box and input_box.states.is_displayed:
-                    return True
-        except CaptchaBlocked:
-            raise
-        except Exception:
-            pass
-        try:
-            bframe.run_js("""
-                const btn = document.querySelector('#recaptcha-audio-button');
-                if (btn) btn.click();
-            """)
-            time.sleep(3)
-            if is_blocked(page):
-                raise CaptchaBlocked("JS点击音频按钮后检测到 IP 被封锁")
-            input_box = bframe.ele('#audio-response', timeout=1)
-            if input_box and input_box.states.is_displayed:
-                return True
-        except CaptchaBlocked:
-            raise
-        except Exception:
-            pass
-        time.sleep(2)
-    return False
-
-def is_audio_mode(page):
-    bframe = find_recaptcha_frame(page, "bframe")
-    if not bframe:
-        return False
-    try:
-        input_box = bframe.ele('#audio-response', timeout=1)
-        return bool(input_box and input_box.states.is_displayed)
-    except Exception:
-        return False
-
-def get_audio_url(page):
-    bframe = find_recaptcha_frame(page, "bframe")
-    if not bframe:
+def solve_recaptcha_with_capsolver(page_url):
+    """调用 CapSolver API 后台静默解决 reCAPTCHA"""
+    if not CAPSOLVER_API_KEY:
+        log("未配置 CAPSOLVER_API_KEY，跳过打码！", "ERROR")
         return None
-    for _ in range(10):
-        try:
-            link = bframe.ele('.rc-audiochallenge-tdownload-link', timeout=1)
-            if link:
-                href = link.attr('href')
-                if href and len(href) > 10:
-                    return html.unescape(href)
-            link = bframe.ele('.rc-audiochallenge-ndownload-link', timeout=1)
-            if link:
-                href = link.attr('href')
-                if href and len(href) > 10:
-                    return html.unescape(href)
-            audio = bframe.ele('#audio-source', timeout=1)
-            if audio:
-                src = audio.attr('src')
-                if src and len(src) > 10:
-                    return html.unescape(src)
-        except Exception:
-            pass
-        time.sleep(1)
-    return None
 
-def reload_challenge(page):
-    bframe = find_recaptcha_frame(page, "bframe")
-    if not bframe:
-        return
-    try:
-        reload_btn = bframe.ele('#recaptcha-reload-button', timeout=2)
-        if reload_btn:
-            try:
-                reload_btn.click()
-            except Exception:
-                reload_btn.click(by_js=True)
-            time.sleep(3)
-    except Exception:
-        pass
-
-def fill_and_verify(page, text):
-    bframe = find_recaptcha_frame(page, "bframe")
-    if not bframe:
-        return False
-    try:
-        input_box = bframe.ele('#audio-response', timeout=2)
-        if not input_box:
-            return False
-        input_box.click()
-        input_box.clear()
-        input_box.input(text)
-    except Exception:
-        return False
-    time.sleep(random.uniform(0.5, 1.5))
-    try:
-        verify_btn = bframe.ele('#recaptcha-verify-button', timeout=2)
-        if verify_btn:
-            try:
-                verify_btn.click()
-            except Exception:
-                verify_btn.click(by_js=True)
-    except Exception:
-        pass
-    return True
-
-def download_audio(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://www.google.com/",
+    log(f"开始调用 CapSolver，目标 SiteKey: {HOST2PLAY_SITE_KEY}")
+    
+    payload = {
+        "clientKey": CAPSOLVER_API_KEY,
+        "task": {
+            "type": "ReCaptchaV2TaskProxyless",
+            "websiteURL": page_url,
+            "websiteKey": HOST2PLAY_SITE_KEY
+        }
     }
-    urls = [url]
-    if "recaptcha.net" in url:
-        urls.append(url.replace("recaptcha.net", "www.google.com"))
-    elif "google.com" in url:
-        urls.append(url.replace("www.google.com", "recaptcha.net"))
-    for audio_url in urls:
-        try:
-            r = requests.get(audio_url, headers=headers, timeout=30)
-            r.raise_for_status()
-            if len(r.content) < 1000:
-                continue
-            path = tempfile.mktemp(suffix=".mp3")
-            with open(path, "wb") as f:
-                f.write(r.content)
-            return path
-        except Exception:
-            pass
-    return None
-
-def recognize_audio(mp3_path):
+    
     try:
-        wav_path = mp3_path.replace(".mp3", ".wav")
-        AudioSegment.from_mp3(mp3_path).export(wav_path, format="wav")
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(wav_path) as src:
-            audio_data = recognizer.record(src)
-            text = recognizer.recognize_google(audio_data)
-        try:
-            os.remove(wav_path)
-        except Exception:
-            pass
-        return text
-    except Exception:
-        return None
-
-def solve_recaptcha(page):
-    start = time.time()
-    while time.time() - start < 15:
-        if find_recaptcha_frame(page, "anchor"):
-            break
-        time.sleep(1)
-    else:
-        raise RuntimeError("reCAPTCHA 加载超时")
-
-    dl_fails = 0
-    for i in range(MAX_CAPTCHA):
-        if is_recaptcha_solved(page):
-            return True
-        if is_blocked(page):
-            raise CaptchaBlocked("IP 被 Google reCAPTCHA 封锁")
-
-        if i == 0:
-            click_recaptcha_checkbox(page)
-            time.sleep(2)
-            if is_recaptcha_solved(page):
-                return True
-
-        if not is_audio_mode(page):
-            if not switch_to_audio(page):
-                time.sleep(3)
-                if not switch_to_audio(page):
-                    click_recaptcha_checkbox(page)
-                    time.sleep(3)
-                    continue
-            time.sleep(random.uniform(2, 4))
-
-        if is_blocked(page):
-            raise CaptchaBlocked("音频模式检测到 IP 被封锁")
-
-        audio_url = get_audio_url(page)
-        if not audio_url:
-            reload_challenge(page)
-            continue
-
-        mp3 = download_audio(audio_url)
-        if not mp3:
-            dl_fails += 1
-            if dl_fails >= 3:
-                raise RuntimeError("音频连续下载失败")
-            reload_challenge(page)
-            time.sleep(random.uniform(3, 6))
-            continue
-        dl_fails = 0
-
-        text = recognize_audio(mp3)
-        try:
-            os.remove(mp3)
-        except Exception:
-            pass
-        if not text:
-            reload_challenge(page)
+        res = requests.post("https://api.capsolver.com/createTask", json=payload).json()
+        if res.get("errorId") == 1:
+            log(f"CapSolver 创建任务失败: {res.get('errorDescription')}", "ERROR")
+            return None
+        
+        task_id = res.get("taskId")
+        log(f"CapSolver 任务已创建 (ID: {task_id})，等待解码...")
+        
+        # 轮询获取结果
+        for _ in range(20): # 最多等60秒
             time.sleep(3)
-            continue
-
-        log(f"识别结果: [{text}]")
-        fill_and_verify(page, text)
-        time.sleep(5)
-        if is_recaptcha_solved(page):
-            return True
-        reload_challenge(page)
-        time.sleep(random.uniform(2, 4))
-    raise RuntimeError("验证码达到最大尝试次数")
+            result_payload = {"clientKey": CAPSOLVER_API_KEY, "taskId": task_id}
+            task_res = requests.post("https://api.capsolver.com/getTaskResult", json=result_payload).json()
+            
+            status = task_res.get("status")
+            if status == "ready":
+                log("CapSolver 解码成功！")
+                return task_res.get("solution", {}).get("gRecaptchaResponse")
+            elif status == "processing":
+                pass
+            else:
+                log(f"CapSolver 解码失败: {task_res.get('errorDescription')}", "ERROR")
+                return None
+        
+        log("CapSolver 解码超时", "ERROR")
+        return None
+    except Exception as e:
+        log(f"CapSolver 请求异常: {e}", "ERROR")
+        return None
 
 # ==============================================================================
 # 单个 URL 续期流程
@@ -466,7 +208,7 @@ def renew_single_url(url):
             page.get(url, retry=3)
             time.sleep(random.uniform(5, 8))
 
-            # 新增：预判 Cloudflare 盾
+            # 预判 Cloudflare 盾
             try:
                 cf_box = page.ele('.ctp-checkbox-label', timeout=3)
                 if cf_box:
@@ -522,41 +264,40 @@ def renew_single_url(url):
                     renew_btn2.click()
                 except:
                     renew_btn2.click(by_js=True)
-            time.sleep(random.uniform(7, 10))
+            time.sleep(random.uniform(5, 8))
 
-            anchor_frame = find_recaptcha_frame(page, "anchor")
-            if not anchor_frame:
-                log("未检测到 reCAPTCHA，检查是否已直接成功")
-                new_expire = get_expire_time(page)
-                if new_expire != old_expire and new_expire != "未知":
-                    success = True
-                else:
-                    failure_reason = "未找到 reCAPTCHA 验证码区域"
+            # 检查是否直接成功（无需验证码）
+            new_expire = get_expire_time(page)
+            if new_expire != old_expire and new_expire != "未知":
+                log("无需验证码，续期直接成功")
+                success = True
                 break
 
-            log("启动 reCAPTCHA 音频破解...")
-            try:
-                solved = solve_recaptcha(page)
-            except CaptchaBlocked:
-                log("IP 被封锁，换 IP 后重试", "WARN")
-                failure_reason = "IP 被 reCAPTCHA 封锁"
-                try:
-                    page.quit()
-                except:
-                    pass
-                page = None
+            # 触发 CapSolver 破解
+            log("启动 CapSolver 后台打码...")
+            g_response = solve_recaptcha_with_capsolver(url)
+            
+            if not g_response:
+                failure_reason = "CapSolver 打码失败"
                 if attempt < MAX_RENEW_RETRIES_PER_URL:
+                    try: page.quit()
+                    except: pass
+                    page = None
                     restart_warp()
                     continue
                 break
-            except Exception as e:
-                log(f"reCAPTCHA 异常: {e}", "ERROR")
-                failure_reason = f"reCAPTCHA 异常: {e}"
-                break
 
-            if not solved:
-                failure_reason = "未通过 reCAPTCHA 验证"
-                break
+            log("打码成功，向页面注入 Token...")
+            # 注入 Token
+            page.run_js(f'document.getElementById("g-recaptcha-response").innerHTML="{g_response}";')
+            time.sleep(1)
+            
+            # 尝试执行验证通过后的回调函数
+            try:
+                page.run_js(f'___grecaptcha_cfg.clients[0].Y.Y.callback("{g_response}")')
+                log("成功触发 reCAPTCHA 回调！")
+            except Exception:
+                log("未找到回调函数，尝试点击默认提交...")
 
             log("点击最终 Renew 按钮")
             final_btn = page.ele('xpath://button[normalize-space(text())="Renew"]', timeout=3)
@@ -565,19 +306,20 @@ def renew_single_url(url):
                     final_btn.click()
                 except:
                     final_btn.click(by_js=True)
-                time.sleep(10)
-                new_expire = get_expire_time(page)
-                if new_expire != old_expire and new_expire != "未知":
-                    log(f"到期时间已更新: {old_expire} -> {new_expire}")
+            
+            # 等待服务器响应并刷新页面内容
+            time.sleep(12)
+            
+            new_expire = get_expire_time(page)
+            if new_expire != old_expire and new_expire != "未知":
+                log(f"到期时间已更新: {old_expire} -> {new_expire}")
+                success = True
+            else:
+                page_text = (page.html or "").lower()
+                if any(w in page_text for w in ["successfully", "renewed"]):
                     success = True
                 else:
-                    page_text = (page.html or "").lower()
-                    if any(w in page_text for w in ["successfully", "renewed"]):
-                        success = True
-                    else:
-                        failure_reason = "续期后未检测到成功标志"
-            else:
-                failure_reason = "找不到最终 Renew 按钮"
+                    failure_reason = "续期后未检测到成功标志"
             break
 
         except Exception as e:
@@ -633,7 +375,6 @@ def send_consolidated_tg(token, chat_id, results):
     media = []
     files = {}
     
-    # Telegram 发送相册(MediaGroup)最多10张图片
     for i, r in enumerate(results[:10]):
         if r['screenshot'] and os.path.exists(r['screenshot']):
             name = f"photo{i}"
@@ -679,7 +420,6 @@ def main():
         res = renew_single_url(url)
         results.append(res)
 
-    # 触发合并通知
     send_consolidated_tg(tg_token, tg_chat_id, results)
 
     total_success = sum(1 for r in results if r['success'])
