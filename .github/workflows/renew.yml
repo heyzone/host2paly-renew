@@ -27,10 +27,17 @@ jobs:
       - name: 安装系统依赖
         run: |
           sudo apt-get update
-          # 补全了运行 Chrome 必须的底层图形依赖包
-          sudo apt-get install -y xvfb ffmpeg unzip curl libnss3 libatk-bridge2.0-0 libxcomposite1 libxrandr2 libxdamage1 libgbm1 libasound2
+          # 去掉那些容易报错的底层图形依赖，只保留核心工具
+          sudo apt-get install -y xvfb ffmpeg unzip curl
+          
+          # 下载 Chrome 安装包
           wget -q -O /tmp/google-chrome-stable_current_amd64.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo dpkg -i /tmp/google-chrome-stable_current_amd64.deb || sudo apt-get install -f -y
+          
+          # 尝试安装 Chrome，如果因为缺少依赖报错，不中止脚本 (|| true)
+          sudo dpkg -i /tmp/google-chrome-stable_current_amd64.deb || true
+          
+          # 让 apt 自动修复并安装刚才 Chrome 缺失的所有底层依赖！(这招最稳)
+          sudo apt-get install -f -y
 
       - name: 安装 Python 依赖
         run: |
