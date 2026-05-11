@@ -6,6 +6,7 @@ import requests
 import tempfile
 import subprocess
 import json
+import re
 from datetime import datetime, timezone, timedelta
 from DrissionPage import ChromiumPage, ChromiumOptions
 
@@ -26,7 +27,7 @@ MAX_RENEW_RETRIES_PER_URL = 50
 # CapSolver 验证码破解配置
 # ==============================================================================
 CAPSOLVER_API_KEY = os.environ.get('CAPSOLVER_API_KEY', '')
-HOST2PLAY_SITE_KEY = "6LeUAtQiAAAAADTs_7zmhdpi_78S9bW-zzDFmpV2"  # 你提取出的固定 SiteKey
+HOST2PLAY_SITE_KEY = "6LeUAtQiAAAAADTs_7zmhdpi_78S9bW-zzDFmpV2"  # 固定的 SiteKey
 
 # ==============================================================================
 # 自定义异常 & 日志
@@ -47,10 +48,8 @@ def get_server_name(page):
         pass
     return "未知"
 
-import re
-
 def get_expire_time(page):
-    # 方案 A：直接用正则暴力提取 YYYY/MM/DD HH:MM:SS 格式的绝对日期
+    # 彻底抛弃 "Expires in" 倒计时，直接用正则暴力提取 YYYY/MM/DD HH:MM:SS 格式的绝对日期
     try:
         match = re.search(r'\d{4}/\d{2}/\d{2}\s\d{2}:\d{2}:\d{2}', page.html)
         if match:
@@ -268,19 +267,28 @@ def renew_single_url(url):
                     renew_btn2.click(by_js=True)
             time.sleep(random.uniform(5, 8))
 
-            # 检查是否直接成功（无需验证码）
+            # ================== 核心防误判修改区域 ==================
+            # 检查是否出现了验证码 iframe
+            is_captcha_present = page.ele('xpath://iframe[contains(@src, "recaptcha") or contains(@src, "bframe")]', timeout=2)
             new_expire = get_expire_time(page)
-            if new_expire != old_expire and new_expire != "未知":
+            
+            # 只有在明确没有验证码弹窗，且绝对日期发生变化时，才判定为直接成功
+            if not is_captcha_present and new_expire != old_expire and new_expire != "未知":
                 log("无需验证码，续期直接成功")
                 success = True
                 break
+            elif is_captcha_present:
+                log("检测到 reCAPTCHA 验证码拦截，进入 CapSolver 打码流程...")
+            else:
+                log(f"时间未更新 ({old_expire}) 且未发现验证码，但为了防止死循环，尝试走打码流程提交...")
+            # ========================================================
 
             # 触发 CapSolver 破解
             log("启动 CapSolver 后台打码...")
             g_response = solve_recaptcha_with_capsolver(url)
             
             if not g_response:
-                failure_reason = "CapSolver 打码失败"
+                failure_reason = "CapSolver 打码失败或超时"
                 if attempt < MAX_RENEW_RETRIES_PER_URL:
                     try: page.quit()
                     except: pass
@@ -289,17 +297,41 @@ def renew_single_url(url):
                     continue
                 break
 
-            log("打码成功，向页面注入 Token...")
-            # 注入 Token
-            page.run_js(f'document.getElementById("g-recaptcha-response").innerHTML="{g_response}";')
-            time.sleep(1)
+            log("打码成功，向页面注入 Token 并寻找回调函数...")
             
-            # 尝试执行验证通过后的回调函数
-            try:
-                page.run_js(f'___grecaptcha_cfg.clients[0].Y.Y.callback("{g_response}")')
-                log("成功触发 reCAPTCHA 回调！")
-            except Exception:
-                log("未找到回调函数，尝试点击默认提交...")
+            # 使用更通用的遍历方式寻找并执行回调函数 (应对混淆代码的动态变化)
+            js_code = f"""
+            const response = "{g_response}";
+            document.getElementById("g-recaptcha-response").innerHTML = response;
+            let callbackFound = false;
+            try {{
+                for (let key in ___grecaptcha_cfg.clients) {{
+                    let client = ___grecaptcha_cfg.clients[key];
+                    for (let k1 in client) {{
+                        let obj = client[k1];
+                        if (obj && typeof obj === 'object') {{
+                            for (let k2 in obj) {{
+                                if (obj[k2] && typeof obj[k2].callback === 'function') {{
+                                    obj[k2].callback(response);
+                                    callbackFound = true;
+                                    break;
+                                }}
+                            }}
+                        }}
+                        if (callbackFound) break;
+                    }}
+                    if (callbackFound) break;
+                }}
+            }} catch(e) {{}}
+            return callbackFound;
+            """
+            
+            callback_success = page.run_js(js_code)
+            
+            if callback_success:
+                log("成功找到并触发 reCAPTCHA 动态回调函数！")
+            else:
+                log("未找到回调函数，尝试强制点击最终提交按钮...", "WARN")
 
             log("点击最终 Renew 按钮")
             final_btn = page.ele('xpath://button[normalize-space(text())="Renew"]', timeout=3)
@@ -314,14 +346,14 @@ def renew_single_url(url):
             
             new_expire = get_expire_time(page)
             if new_expire != old_expire and new_expire != "未知":
-                log(f"到期时间已更新: {old_expire} -> {new_expire}")
+                log(f"续期验证完成，到期时间已更新: {old_expire} -> {new_expire}")
                 success = True
             else:
                 page_text = (page.html or "").lower()
                 if any(w in page_text for w in ["successfully", "renewed"]):
                     success = True
                 else:
-                    failure_reason = "续期后未检测到成功标志"
+                    failure_reason = "续期后未检测到成功标志或时间未更新"
             break
 
         except Exception as e:
